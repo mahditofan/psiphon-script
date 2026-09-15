@@ -49,10 +49,7 @@ install_country_instance() {
     chmod +x plinstaller2
     ./plinstaller2
 
-    # Completely stop and disable native psiphon service
     systemctl stop psiphon 2>/dev/null
-    systemctl disable psiphon 2>/dev/null
-    systemctl mask psiphon 2>/dev/null
 
     echo -e "\n${BLUE}=== Select Target Location ===${NC}"
     for i in "${!COUNTRIES[@]}"; do
@@ -77,22 +74,21 @@ install_country_instance() {
     read -p "Enter SOCKS5 Port for $C_NAME (Default: $DEFAULT_PORT): " CUSTOM_PORT
     PORT=${CUSTOM_PORT:-$DEFAULT_PORT}
 
-    CONF_FILE="/etc/psiphon/manager_custom.config"
-    mkdir -p /etc/psiphon
+    CONF_FILE="/etc/psiphon.config"
+    if [ ! -f "$CONF_FILE" ]; then
+        CONF_FILE="/etc/psiphon/psiphon.config"
+    fi
 
-    # Create dedicated custom configuration file
-    cat <<EOF > "$CONF_FILE"
-{
-    "PropagationChannelId": "WEB",
-    "SponsorId": "WEB",
-    "EgressRegion": "$C_CODE",
-    "LocalSocksProxyPort": $PORT
-}
-EOF
+    # Modify existing config without losing embedded server list
+    if [ -f "$CONF_FILE" ]; then
+        tmp=$(mktemp)
+        jq --arg country "$C_CODE" --argport "$PORT" '.EgressRegion = $country | .LocalSocksProxyPort = ($port | tonumber)' "$CONF_FILE" > "$tmp" && mv "$tmp" "$CONF_FILE"
+    fi
 
     PSIPHON_BIN=$(which psiphon 2>/dev/null || echo "/root/PsiphonLinux/psiphon-tunnel-core")
 
-    cat <<EOF > /etc/systemd/system/psiphon-manager.service
+    # Override native service to use our updated config
+    cat <<EOF > /etc/systemd/system/psiphon.service
 [Unit]
 Description=Psiphon Manager Service
 After=network.target
@@ -110,36 +106,33 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable psiphon-manager.service
-    systemctl restart psiphon-manager.service
+    systemctl enable psiphon.service
+    systemctl restart psiphon.service
 
     echo -e "${GREEN}\nConfigured location $C_NAME ($C_CODE) on port $PORT!${NC}"
-    echo -e "${YELLOW}Waiting 10 seconds for connection...${NC}"
-    sleep 10
+    echo -e "${YELLOW}Waiting 15 seconds for connection...${NC}"
+    sleep 15
     
     TEST_RES=$(curl --socks5-hostname 127.0.0.1:$PORT -s --max-time 10 https://ipinfo.io)
     if [ -n "$TEST_RES" ]; then
         echo -e "${GREEN}Connection Successful!${NC}"
         echo "$TEST_RES" | grep -E '"ip"|"country"|"city"'
     else
-        echo -e "${YELLOW}Service started. Check Option 2 for status.${NC}"
+        echo -e "${YELLOW}Tunnel is connecting. Check status in option 2 shortly.${NC}"
     fi
 }
 
 list_and_test_services() {
     echo -e "\n${BLUE}=== Current Psiphon Status ===${NC}"
     
-    if [ ! -f "/etc/systemd/system/psiphon-manager.service" ]; then
-        echo -e "${YELLOW}No Psiphon service is currently installed.${NC}"
-        return
-    fi
+    CONF_FILE="/etc/psiphon.config"
+    [ ! -f "$CONF_FILE" ] && CONF_FILE="/etc/psiphon/psiphon.config"
 
-    STATUS=$(systemctl is-active psiphon-manager.service 2>/dev/null)
+    STATUS=$(systemctl is-active psiphon.service 2>/dev/null)
     
     if [ "$STATUS" == "active" ]; then
-        CONF_FILE="/etc/psiphon/manager_custom.config"
-        PORT=$(grep -oP '"LocalSocksProxyPort":\s*\K\d+' "$CONF_FILE" 2>/dev/null || echo "Unknown")
-        REGION=$(grep -oP '"EgressRegion":\s*"\K[^"]+' "$CONF_FILE" 2>/dev/null || echo "Unknown")
+        PORT=$(grep -oP '"LocalSocksProxyPort":\s*\K\d+' "$CONF_FILE" 2>/dev/null || echo "1080")
+        REGION=$(grep -oP '"EgressRegion":\s*"\K[^"]+' "$CONF_FILE" 2>/dev/null || echo "N/A")
         
         IP_INFO=$(curl --socks5-hostname 127.0.0.1:$PORT -s --max-time 6 https://ipinfo.io | grep -oP '"country":\s*"\K[^"]+' || echo "Connecting...")
         
@@ -151,14 +144,13 @@ list_and_test_services() {
 
 uninstall_all() {
     echo -e "${RED}=== Clean Uninstall ===${NC}"
+    systemctl stop psiphon.service 2>/dev/null
+    systemctl disable psiphon.service 2>/dev/null
     systemctl stop psiphon-manager.service 2>/dev/null
     systemctl disable psiphon-manager.service 2>/dev/null
-    systemctl unmask psiphon 2>/dev/null
-    systemctl stop psiphon 2>/dev/null
-    systemctl disable psiphon 2>/dev/null
     
-    rm -f /etc/systemd/system/psiphon-manager.service
     rm -f /etc/systemd/system/psiphon.service
+    rm -f /etc/systemd/system/psiphon-manager.service
     systemctl daemon-reload
 
     rm -rf /etc/psiphon
