@@ -15,15 +15,15 @@ fi
 
 ensure_psiphon_installed() {
     if [ ! -f "/usr/bin/psiphon" ]; then
-        echo -e "${YELLOW}Installing core Psiphon environment...${NC}"
+        echo -e "${YELLOW}Installing Psiphon base core...${NC}"
         apt-get update -y && apt-get install -y wget curl lsof jq 2>/dev/null
+        
         cd /root
         mkdir -p PsiphonLinux && cd PsiphonLinux
         wget -q https://raw.githubusercontent.com/SpherionOS/PsiphonLinux/main/plinstaller2 -O plinstaller2
         chmod +x plinstaller2
         ./plinstaller2
         
-        # Stop default background service created by installer
         systemctl stop psiphon.service 2>/dev/null
         systemctl disable psiphon.service 2>/dev/null
     fi
@@ -84,21 +84,22 @@ install_country_instance() {
     read -p "Enter SOCKS5 Port for $C_NAME (Default: $DEFAULT_PORT): " CUSTOM_PORT
     PORT=${CUSTOM_PORT:-$DEFAULT_PORT}
 
-    # Isolated Working Directory for Each Country Instance
-    INSTANCE_DIR="$BASE_DIR/$C_CODE"
-    mkdir -p "$INSTANCE_DIR"
+    # Stop any conflicting running services first
+    systemctl stop psiphon-*.service 2>/dev/null
 
-    # Generate standard config in instance directory
-    cat <<EOF > "$INSTANCE_DIR/psiphon.config"
+    # Global Config Directory Setup
+    mkdir -p /etc/psiphon
+    cat <<EOF > "/etc/psiphon/psiphon.config"
 {
     "EgressRegion": "$C_CODE",
     "LocalSocksProxyPort": $PORT
 }
 EOF
 
-    # Copy binary or symlink required configs
-    mkdir -p /etc/psiphon
-    cp "$INSTANCE_DIR/psiphon.config" /etc/psiphon/psiphon.config
+    # Instance Storage
+    INSTANCE_DIR="$BASE_DIR/$C_CODE"
+    mkdir -p "$INSTANCE_DIR"
+    cp /etc/psiphon/psiphon.config "$INSTANCE_DIR/psiphon.config"
 
     SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
     cat <<EOF > "$SERVICE_FILE"
@@ -108,7 +109,7 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=$INSTANCE_DIR
+WorkingDirectory=/root/PsiphonLinux
 ExecStartPre=/usr/bin/cp -f $INSTANCE_DIR/psiphon.config /etc/psiphon/psiphon.config
 ExecStart=/usr/bin/psiphon
 Restart=always
@@ -124,15 +125,15 @@ EOF
     systemctl restart "$SERVICE_NAME"
 
     echo -e "${GREEN}\nService for $C_NAME on port $PORT started!${NC}"
-    echo -e "${YELLOW}Waiting 8 seconds for connection...${NC}"
-    sleep 8
+    echo -e "${YELLOW}Establishing tunnel connection (15s)...${NC}"
+    sleep 15
     
     TEST_RES=$(curl --socks5-hostname 127.0.0.1:$PORT -s --max-time 10 https://ipinfo.io)
     if [ -n "$TEST_RES" ]; then
-        echo -e "${GREEN}Connection Successful!${NC}"
+        echo -e "${GREEN}Successfully Connected!${NC}"
         echo "$TEST_RES" | grep -E '"ip"|"country"|"city"'
     else
-        echo -e "${YELLOW}Service initialized. Run option 2 to check status.${NC}"
+        echo -e "${YELLOW}Connection is initializing. Please check Option 2 in a few seconds.${NC}"
     fi
 }
 
@@ -154,7 +155,7 @@ list_and_test_services() {
         STATUS=$(systemctl is-active "$SVC_NAME")
         if [ "$STATUS" == "active" ]; then
             STATUS_STR="${GREEN}Active${NC}"
-            IP_INFO=$(curl --socks5-hostname 127.0.0.1:$PORT -s --max-time 6 https://ipinfo.io | grep -oP '"country":\s*"\K[^"]+' || echo "Connecting...")
+            IP_INFO=$(curl --socks5-hostname 127.0.0.1:$PORT -s --max-time 8 https://ipinfo.io | grep -oP '"country":\s*"\K[^"]+' || echo "Connecting...")
         else
             STATUS_STR="${RED}Inactive${NC}"
             IP_INFO="N/A"
