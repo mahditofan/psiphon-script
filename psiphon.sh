@@ -49,7 +49,6 @@ install_country_instance() {
     chmod +x plinstaller2
     ./plinstaller2
 
-    # Find psiphon binary path
     PSIPHON_BIN=$(which psiphon 2>/dev/null || echo "/root/PsiphonLinux/psiphon-tunnel-core")
 
     echo -e "\n${BLUE}=== Select Target Location ===${NC}"
@@ -75,15 +74,17 @@ install_country_instance() {
     read -p "Enter SOCKS5 Port for $C_NAME (Default: $DEFAULT_PORT): " CUSTOM_PORT
     PORT=${CUSTOM_PORT:-$DEFAULT_PORT}
 
+    # FIX: Added required PropagationChannelId & SponsorId fields
     mkdir -p /etc/psiphon
     cat <<EOF > /etc/psiphon/psiphon.config
 {
+    "PropagationChannelId": "FFFFFFFFFFFFFFFF",
+    "SponsorId": "FFFFFFFFFFFFFFFF",
     "EgressRegion": "$C_CODE",
     "LocalSocksProxyPort": $PORT
 }
 EOF
 
-    # Create and force SystemD Service
     cat <<EOF > /etc/systemd/system/psiphon-manager.service
 [Unit]
 Description=Psiphon Manager Service
