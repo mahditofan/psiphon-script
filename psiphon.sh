@@ -11,22 +11,6 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-ensure_psiphon_installed() {
-    if [ ! -f "/usr/bin/psiphon" ]; then
-        echo -e "${YELLOW}Installing Psiphon core...${NC}"
-        apt-get update -y && apt-get install -y wget curl lsof jq 2>/dev/null
-        
-        cd /root
-        mkdir -p PsiphonLinux && cd PsiphonLinux
-        wget -q https://raw.githubusercontent.com/SpherionOS/PsiphonLinux/main/plinstaller2 -O plinstaller2
-        chmod +x plinstaller2
-        ./plinstaller2
-        
-        systemctl stop psiphon.service 2>/dev/null
-        systemctl disable psiphon.service 2>/dev/null
-    fi
-}
-
 COUNTRIES=(
     "United States|US"
     "Germany|DE"
@@ -56,9 +40,16 @@ COUNTRIES=(
 )
 
 install_country_instance() {
-    ensure_psiphon_installed
+    echo -e "${YELLOW}Installing / Re-installing core via SpherionOS script...${NC}"
+    apt-get update -y && apt-get install -y wget curl lsof jq 2>/dev/null
+    
+    cd /root
+    mkdir -p PsiphonLinux && cd PsiphonLinux
+    wget -q https://raw.githubusercontent.com/SpherionOS/PsiphonLinux/main/plinstaller2 -O plinstaller2
+    chmod +x plinstaller2
+    ./plinstaller2
 
-    echo -e "\n${BLUE}=== Select Location to Install ===${NC}"
+    echo -e "\n${BLUE}=== Select Target Location ===${NC}"
     for i in "${!COUNTRIES[@]}"; do
         NAME=$(echo "${COUNTRIES[$i]}" | cut -d'|' -f1)
         CODE=$(echo "${COUNTRIES[$i]}" | cut -d'|' -f2)
@@ -85,35 +76,16 @@ install_country_instance() {
     cat <<EOF > /etc/psiphon/psiphon.config
 {
     "EgressRegion": "$C_CODE",
-    "LocalSocksProxyPort": $PORT,
-    "Authorizations": []
+    "LocalSocksProxyPort": $PORT
 }
 EOF
 
-    SERVICE_FILE="/etc/systemd/system/psiphon.service"
-    cat <<EOF > "$SERVICE_FILE"
-[Unit]
-Description=Psiphon Service
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/root/PsiphonLinux
-ExecStart=/usr/bin/psiphon --config /etc/psiphon/psiphon.config
-Restart=always
-RestartSec=3
-User=root
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
+    # Restart the installed system service
     systemctl daemon-reload
-    systemctl enable psiphon
-    systemctl restart psiphon
+    systemctl restart psiphon 2>/dev/null || systemctl restart psiphon.service 2>/dev/null
 
-    echo -e "${GREEN}\nService started on port $PORT!${NC}"
-    echo -e "${YELLOW}Waiting 10 seconds for connection...${NC}"
+    echo -e "${GREEN}\nConfigured location $C_NAME ($C_CODE) on port $PORT!${NC}"
+    echo -e "${YELLOW}Waiting 10 seconds for service connection...${NC}"
     sleep 10
     
     TEST_RES=$(curl --socks5-hostname 127.0.0.1:$PORT -s --max-time 10 https://ipinfo.io)
@@ -121,13 +93,19 @@ EOF
         echo -e "${GREEN}Connection Successful!${NC}"
         echo "$TEST_RES" | grep -E '"ip"|"country"|"city"'
     else
-        echo -e "${YELLOW}Service initialized. Check Option 2 in a moment.${NC}"
+        echo -e "${YELLOW}Service updated. Check Option 2 for status.${NC}"
     fi
 }
 
 list_and_test_services() {
     echo -e "\n${BLUE}=== Current Psiphon Status ===${NC}"
-    STATUS=$(systemctl is-active psiphon 2>/dev/null)
+    
+    if [ ! -f "/etc/psiphon/psiphon.config" ] && [ ! -f "/usr/bin/psiphon" ]; then
+        echo -e "${YELLOW}No Psiphon service is currently installed.${NC}"
+        return
+    fi
+
+    STATUS=$(systemctl is-active psiphon 2>/dev/null || systemctl is-active psiphon.service 2>/dev/null)
     
     if [ "$STATUS" == "active" ]; then
         PORT=$(grep -oP '"LocalSocksProxyPort":\s*\K\d+' /etc/psiphon/psiphon.config 2>/dev/null || echo "1080")
@@ -135,16 +113,19 @@ list_and_test_services() {
         
         IP_INFO=$(curl --socks5-hostname 127.0.0.1:$PORT -s --max-time 6 https://ipinfo.io | grep -oP '"country":\s*"\K[^"]+' || echo "Connecting...")
         
-        echo -e "Status: ${GREEN}Active${NC} | Configured Country: ${YELLOW}$REGION${NC} | Port: ${GREEN}$PORT${NC} | Exit Country: ${BLUE}$IP_INFO${NC}"
+        echo -e "Status: ${GREEN}Active${NC} | Country: ${YELLOW}$REGION${NC} | Port: ${GREEN}$PORT${NC} | Exit IP Country: ${BLUE}$IP_INFO${NC}"
     else
-        echo -e "Status: ${RED}Inactive${NC}"
+        echo -e "Status: ${RED}Inactive${NC} (Service is stopped or missing)"
     fi
 }
 
 uninstall_all() {
     echo -e "${RED}=== Clean Uninstall ===${NC}"
     systemctl stop psiphon 2>/dev/null
+    systemctl stop psiphon.service 2>/dev/null
     systemctl disable psiphon 2>/dev/null
+    systemctl disable psiphon.service 2>/dev/null
+    
     rm -f /etc/systemd/system/psiphon.service
     systemctl daemon-reload
 
