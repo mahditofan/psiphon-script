@@ -16,22 +16,27 @@ fi
 
 ensure_psiphon_installed() {
     if [ ! -f "/usr/bin/psiphon" ]; then
-        echo -e "${YELLOW}Downloading official Psiphon console binary...${NC}"
-        mkdir -p "$INSTALL_DIR"
+        echo -e "${YELLOW}Installing Psiphon dependencies and core...${NC}"
         
-        # Disable interfering default service if exists
         systemctl stop psiphon 2>/dev/null
         systemctl disable psiphon 2>/dev/null
         
-        # Download working official binary build
-        ARCH=$(uname -m)
-        if [ "$ARCH" == "x86_64" ]; then
-            wget -q --show-progress "https://github.com/Psiphon-Labs/psiphon-tunnel-core-binaries/raw/master/psiphon-tunnel-core/x86_64/psiphon-tunnel-core" -O /usr/bin/psiphon
-        else
-            wget -q --show-progress "https://github.com/Psiphon-Labs/psiphon-tunnel-core-binaries/raw/master/psiphon-tunnel-core/i686/psiphon-tunnel-core" -O /usr/bin/psiphon
-        fi
+        apt-get update -y && apt-get install -y wget curl lsof git golang-go 2>/dev/null
         
+        echo -e "${YELLOW}Building Psiphon tunnel core...${NC}"
+        mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
+        git clone https://github.com/Psiphon-Labs/psiphon-tunnel-core.git . 2>/dev/null || git pull
+        
+        cd ConsoleClient
+        go build -o /usr/bin/psiphon main.go
         chmod +x /usr/bin/psiphon
+        
+        if [ ! -f "/usr/bin/psiphon" ]; then
+            echo -e "${RED}Build failed! Trying fallback download...${NC}"
+            wget -q https://raw.githubusercontent.com/SpherionOS/PsiphonLinux/main/plinstaller2 -O /tmp/plinstaller2
+            chmod +x /tmp/plinstaller2
+            /tmp/plinstaller2
+        fi
     fi
 }
 
@@ -132,7 +137,7 @@ EOF
         echo -e "${GREEN}Connection Successful!${NC}"
         echo "$TEST_RES" | grep -E '"ip"|"country"|"city"'
     else
-        echo -e "${RED}Tunnel is connecting in background... Please check status in Option 2 in a few seconds.${NC}"
+        echo -e "${YELLOW}Tunnel is connecting in background. Check status in Option 2.${NC}"
     fi
 }
 
@@ -207,7 +212,7 @@ uninstall_all() {
 
 while true; do
     echo -e "\n${BLUE}==================================================${NC}"
-    echo -e "${GREEN}      Psiphon Multi-Location Manager (Fixed)      ${NC}"
+    echo -e "${GREEN}      Psiphon Multi-Location Manager              ${NC}"
     echo -e "${BLUE}==================================================${NC}"
     echo "1) Install New Country Location"
     echo "2) List Active Locations and Test IP"
