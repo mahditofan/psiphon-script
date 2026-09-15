@@ -40,7 +40,7 @@ COUNTRIES=(
 )
 
 install_country_instance() {
-    echo -e "${YELLOW}Installing core dependencies and Psiphon...${NC}"
+    echo -e "${YELLOW}Installing core via official installer...${NC}"
     apt-get update -y && apt-get install -y wget curl lsof jq 2>/dev/null
     
     cd /root
@@ -49,7 +49,10 @@ install_country_instance() {
     chmod +x plinstaller2
     ./plinstaller2
 
+    # Completely stop and disable native psiphon service
     systemctl stop psiphon 2>/dev/null
+    systemctl disable psiphon 2>/dev/null
+    systemctl mask psiphon 2>/dev/null
 
     echo -e "\n${BLUE}=== Select Target Location ===${NC}"
     for i in "${!COUNTRIES[@]}"; do
@@ -74,16 +77,18 @@ install_country_instance() {
     read -p "Enter SOCKS5 Port for $C_NAME (Default: $DEFAULT_PORT): " CUSTOM_PORT
     PORT=${CUSTOM_PORT:-$DEFAULT_PORT}
 
-    CONF_FILE="/etc/psiphon.config"
-    if [ ! -f "$CONF_FILE" ]; then
-        CONF_FILE="/etc/psiphon/psiphon.config"
-    fi
+    CONF_FILE="/etc/psiphon/manager_custom.config"
+    mkdir -p /etc/psiphon
 
-    # Update config without breaking original structure
-    if [ -f "$CONF_FILE" ]; then
-        tmp=$(mktemp)
-        jq --arg country "$C_CODE" --argport "$PORT" '.EgressRegion = $country | .LocalSocksProxyPort = ($port | tonumber)' "$CONF_FILE" > "$tmp" && mv "$tmp" "$CONF_FILE"
-    fi
+    # Create dedicated custom configuration file
+    cat <<EOF > "$CONF_FILE"
+{
+    "PropagationChannelId": "WEB",
+    "SponsorId": "WEB",
+    "EgressRegion": "$C_CODE",
+    "LocalSocksProxyPort": $PORT
+}
+EOF
 
     PSIPHON_BIN=$(which psiphon 2>/dev/null || echo "/root/PsiphonLinux/psiphon-tunnel-core")
 
@@ -109,15 +114,15 @@ EOF
     systemctl restart psiphon-manager.service
 
     echo -e "${GREEN}\nConfigured location $C_NAME ($C_CODE) on port $PORT!${NC}"
-    echo -e "${YELLOW}Connecting tunnel (waiting 15s)...${NC}"
-    sleep 15
+    echo -e "${YELLOW}Waiting 10 seconds for connection...${NC}"
+    sleep 10
     
     TEST_RES=$(curl --socks5-hostname 127.0.0.1:$PORT -s --max-time 10 https://ipinfo.io)
     if [ -n "$TEST_RES" ]; then
-        echo -e "${GREEN}Connection Successful! Traffic is flowing.${NC}"
+        echo -e "${GREEN}Connection Successful!${NC}"
         echo "$TEST_RES" | grep -E '"ip"|"country"|"city"'
     else
-        echo -e "${YELLOW}Tunnel is establishing. Check Option 2 in a few seconds.${NC}"
+        echo -e "${YELLOW}Service started. Check Option 2 for status.${NC}"
     fi
 }
 
@@ -132,9 +137,9 @@ list_and_test_services() {
     STATUS=$(systemctl is-active psiphon-manager.service 2>/dev/null)
     
     if [ "$STATUS" == "active" ]; then
-        CONF_FILE=$(grep -oP 'ExecStart=.*--config \K\S+' /etc/systemd/system/psiphon-manager.service 2>/dev/null)
-        PORT=$(grep -oP '"LocalSocksProxyPort":\s*\K\d+' "$CONF_FILE" 2>/dev/null || echo "1080")
-        REGION=$(grep -oP '"EgressRegion":\s*"\K[^"]+' "$CONF_FILE" 2>/dev/null || echo "N/A")
+        CONF_FILE="/etc/psiphon/manager_custom.config"
+        PORT=$(grep -oP '"LocalSocksProxyPort":\s*\K\d+' "$CONF_FILE" 2>/dev/null || echo "Unknown")
+        REGION=$(grep -oP '"EgressRegion":\s*"\K[^"]+' "$CONF_FILE" 2>/dev/null || echo "Unknown")
         
         IP_INFO=$(curl --socks5-hostname 127.0.0.1:$PORT -s --max-time 6 https://ipinfo.io | grep -oP '"country":\s*"\K[^"]+' || echo "Connecting...")
         
@@ -148,6 +153,7 @@ uninstall_all() {
     echo -e "${RED}=== Clean Uninstall ===${NC}"
     systemctl stop psiphon-manager.service 2>/dev/null
     systemctl disable psiphon-manager.service 2>/dev/null
+    systemctl unmask psiphon 2>/dev/null
     systemctl stop psiphon 2>/dev/null
     systemctl disable psiphon 2>/dev/null
     
