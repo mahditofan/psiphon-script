@@ -13,7 +13,7 @@ fi
 
 ensure_psiphon_installed() {
     if [ ! -f "/usr/bin/psiphon" ]; then
-        echo -e "${YELLOW}Running original installer...${NC}"
+        echo -e "${YELLOW}Installing Psiphon core...${NC}"
         apt-get update -y && apt-get install -y wget curl lsof jq 2>/dev/null
         
         cd /root
@@ -81,16 +81,15 @@ install_country_instance() {
     read -p "Enter SOCKS5 Port for $C_NAME (Default: $DEFAULT_PORT): " CUSTOM_PORT
     PORT=${CUSTOM_PORT:-$DEFAULT_PORT}
 
-    # Set up native config directory
     mkdir -p /etc/psiphon
     cat <<EOF > /etc/psiphon/psiphon.config
 {
     "EgressRegion": "$C_CODE",
-    "LocalSocksProxyPort": $PORT
+    "LocalSocksProxyPort": $PORT,
+    "Authorizations": []
 }
 EOF
 
-    # Configure original systemd service
     SERVICE_FILE="/etc/systemd/system/psiphon.service"
     cat <<EOF > "$SERVICE_FILE"
 [Unit]
@@ -100,7 +99,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/root/PsiphonLinux
-ExecStart=/usr/bin/psiphon
+ExecStart=/usr/bin/psiphon --config /etc/psiphon/psiphon.config
 Restart=always
 RestartSec=3
 User=root
@@ -122,7 +121,7 @@ EOF
         echo -e "${GREEN}Connection Successful!${NC}"
         echo "$TEST_RES" | grep -E '"ip"|"country"|"city"'
     else
-        echo -e "${YELLOW}Service running. Check Option 2 in a moment.${NC}"
+        echo -e "${YELLOW}Service initialized. Check Option 2 in a moment.${NC}"
     fi
 }
 
@@ -154,7 +153,7 @@ uninstall_all() {
     rm -f /usr/bin/psiphon
     rm -rf /root/.config/ca.psiphon.PsiphonTunnel.tunnel-core 2>/dev/null
 
-    echo -e "${GREEN}Uninstalled completely.${NC}"
+    echo -e "${GREEN}Psiphon uninstalled completely.${NC}"
 }
 
 while true; do
@@ -172,8 +171,7 @@ while true; do
         1) install_country_instance ;;
         2) list_and_test_services ;;
         3) uninstall_all ;;
-        4) uninstall_all; exit 0 ;;
-        5) exit 0 ;;
+        4) exit 0 ;;
         *) echo -e "${RED}Invalid option!${NC}" ;;
     esac
 done
