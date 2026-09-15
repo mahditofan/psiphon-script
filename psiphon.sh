@@ -6,8 +6,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-INSTALL_DIR="/opt/psiphon"
-CONFIG_BASE_DIR="/etc/psiphon"
+BASE_DIR="/etc/psiphon-multi"
 
 if [ "$EUID" -ne 0 ]; then
   echo -e "${RED}Error: This script must be run as root.${NC}"
@@ -16,27 +15,17 @@ fi
 
 ensure_psiphon_installed() {
     if [ ! -f "/usr/bin/psiphon" ]; then
-        echo -e "${YELLOW}Installing Psiphon dependencies and core...${NC}"
+        echo -e "${YELLOW}Installing core Psiphon environment...${NC}"
+        apt-get update -y && apt-get install -y wget curl lsof jq 2>/dev/null
+        cd /root
+        mkdir -p PsiphonLinux && cd PsiphonLinux
+        wget -q https://raw.githubusercontent.com/SpherionOS/PsiphonLinux/main/plinstaller2 -O plinstaller2
+        chmod +x plinstaller2
+        ./plinstaller2
         
-        systemctl stop psiphon 2>/dev/null
-        systemctl disable psiphon 2>/dev/null
-        
-        apt-get update -y && apt-get install -y wget curl lsof git golang-go 2>/dev/null
-        
-        echo -e "${YELLOW}Building Psiphon tunnel core...${NC}"
-        mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
-        git clone https://github.com/Psiphon-Labs/psiphon-tunnel-core.git . 2>/dev/null || git pull
-        
-        cd ConsoleClient
-        go build -o /usr/bin/psiphon main.go
-        chmod +x /usr/bin/psiphon
-        
-        if [ ! -f "/usr/bin/psiphon" ]; then
-            echo -e "${RED}Build failed! Trying fallback download...${NC}"
-            wget -q https://raw.githubusercontent.com/SpherionOS/PsiphonLinux/main/plinstaller2 -O /tmp/plinstaller2
-            chmod +x /tmp/plinstaller2
-            /tmp/plinstaller2
-        fi
+        # Stop default background service created by installer
+        systemctl stop psiphon.service 2>/dev/null
+        systemctl disable psiphon.service 2>/dev/null
     fi
 }
 
@@ -95,16 +84,21 @@ install_country_instance() {
     read -p "Enter SOCKS5 Port for $C_NAME (Default: $DEFAULT_PORT): " CUSTOM_PORT
     PORT=${CUSTOM_PORT:-$DEFAULT_PORT}
 
-    CONF_DIR="$CONFIG_BASE_DIR/$C_CODE"
-    mkdir -p "$CONF_DIR"
-    
-    cat <<EOF > "$CONF_DIR/psiphon.config"
+    # Isolated Working Directory for Each Country Instance
+    INSTANCE_DIR="$BASE_DIR/$C_CODE"
+    mkdir -p "$INSTANCE_DIR"
+
+    # Generate standard config in instance directory
+    cat <<EOF > "$INSTANCE_DIR/psiphon.config"
 {
     "EgressRegion": "$C_CODE",
-    "LocalSocksProxyPort": $PORT,
-    "Authorizations": []
+    "LocalSocksProxyPort": $PORT
 }
 EOF
+
+    # Copy binary or symlink required configs
+    mkdir -p /etc/psiphon
+    cp "$INSTANCE_DIR/psiphon.config" /etc/psiphon/psiphon.config
 
     SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
     cat <<EOF > "$SERVICE_FILE"
@@ -114,8 +108,9 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=$CONF_DIR
-ExecStart=/usr/bin/psiphon --config $CONF_DIR/psiphon.config
+WorkingDirectory=$INSTANCE_DIR
+ExecStartPre=/usr/bin/cp -f $INSTANCE_DIR/psiphon.config /etc/psiphon/psiphon.config
+ExecStart=/usr/bin/psiphon
 Restart=always
 RestartSec=3
 User=root
@@ -129,15 +124,15 @@ EOF
     systemctl restart "$SERVICE_NAME"
 
     echo -e "${GREEN}\nService for $C_NAME on port $PORT started!${NC}"
-    echo -e "${YELLOW}Waiting 10 seconds for Psiphon tunnel to connect...${NC}"
-    sleep 10
+    echo -e "${YELLOW}Waiting 8 seconds for connection...${NC}"
+    sleep 8
     
     TEST_RES=$(curl --socks5-hostname 127.0.0.1:$PORT -s --max-time 10 https://ipinfo.io)
     if [ -n "$TEST_RES" ]; then
         echo -e "${GREEN}Connection Successful!${NC}"
         echo "$TEST_RES" | grep -E '"ip"|"country"|"city"'
     else
-        echo -e "${YELLOW}Tunnel is connecting in background. Check status in Option 2.${NC}"
+        echo -e "${YELLOW}Service initialized. Run option 2 to check status.${NC}"
     fi
 }
 
@@ -154,7 +149,7 @@ list_and_test_services() {
         SVC_NAME=$(basename "$SVC")
         C_CODE=$(echo "$SVC_NAME" | sed 's/psiphon-//;s/\.service//' | tr '[:lower:]' '[:upper:]')
         
-        PORT=$(grep -oP '"LocalSocksProxyPort":\s*\K\d+' "$CONFIG_BASE_DIR/$C_CODE/psiphon.config" 2>/dev/null)
+        PORT=$(grep -oP '"LocalSocksProxyPort":\s*\K\d+' "$BASE_DIR/$C_CODE/psiphon.config" 2>/dev/null)
         
         STATUS=$(systemctl is-active "$SVC_NAME")
         if [ "$STATUS" == "active" ]; then
@@ -185,7 +180,7 @@ remove_country_instance() {
         systemctl stop "$SVC_NAME" 2>/dev/null
         systemctl disable "$SVC_NAME" 2>/dev/null
         rm -f "$SVC"
-        rm -rf "$CONFIG_BASE_DIR/$C_CODE"
+        rm -rf "$BASE_DIR/$C_CODE"
     done
     systemctl daemon-reload
     echo -e "${GREEN}Removed successfully.${NC}"
@@ -195,19 +190,20 @@ uninstall_all() {
     echo -e "${RED}=== Clean Uninstall All ===${NC}"
     systemctl stop psiphon-*.service 2>/dev/null
     systemctl disable psiphon-*.service 2>/dev/null
-    systemctl stop psiphon 2>/dev/null
-    systemctl disable psiphon 2>/dev/null
+    systemctl stop psiphon.service 2>/dev/null
+    systemctl disable psiphon.service 2>/dev/null
     
     rm -f /etc/systemd/system/psiphon-*.service
     rm -f /etc/systemd/system/psiphon.service
     systemctl daemon-reload
 
-    rm -rf "$INSTALL_DIR"
-    rm -rf "$CONFIG_BASE_DIR"
+    rm -rf "$BASE_DIR"
+    rm -rf /etc/psiphon
+    rm -rf /root/PsiphonLinux
     rm -f /usr/bin/psiphon
     rm -rf /root/.config/ca.psiphon.PsiphonTunnel.tunnel-core 2>/dev/null
 
-    echo -e "${GREEN}All Psiphon instances uninstalled.${NC}"
+    echo -e "${GREEN}All Psiphon instances uninstalled completely.${NC}"
 }
 
 while true; do
