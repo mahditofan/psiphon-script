@@ -40,7 +40,7 @@ COUNTRIES=(
 )
 
 install_country_instance() {
-    echo -e "${YELLOW}Installing / Re-installing core via SpherionOS script...${NC}"
+    echo -e "${YELLOW}Installing core dependencies and Psiphon...${NC}"
     apt-get update -y && apt-get install -y wget curl lsof jq 2>/dev/null
     
     cd /root
@@ -48,6 +48,9 @@ install_country_instance() {
     wget -q https://raw.githubusercontent.com/SpherionOS/PsiphonLinux/main/plinstaller2 -O plinstaller2
     chmod +x plinstaller2
     ./plinstaller2
+
+    # Find psiphon binary path
+    PSIPHON_BIN=$(which psiphon 2>/dev/null || echo "/root/PsiphonLinux/psiphon-tunnel-core")
 
     echo -e "\n${BLUE}=== Select Target Location ===${NC}"
     for i in "${!COUNTRIES[@]}"; do
@@ -80,32 +83,50 @@ install_country_instance() {
 }
 EOF
 
-    # Restart the installed system service
+    # Create and force SystemD Service
+    cat <<EOF > /etc/systemd/system/psiphon-manager.service
+[Unit]
+Description=Psiphon Manager Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/PsiphonLinux
+ExecStart=$PSIPHON_BIN --config /etc/psiphon/psiphon.config
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
     systemctl daemon-reload
-    systemctl restart psiphon 2>/dev/null || systemctl restart psiphon.service 2>/dev/null
+    systemctl enable psiphon-manager.service
+    systemctl restart psiphon-manager.service
 
     echo -e "${GREEN}\nConfigured location $C_NAME ($C_CODE) on port $PORT!${NC}"
-    echo -e "${YELLOW}Waiting 10 seconds for service connection...${NC}"
-    sleep 10
+    echo -e "${YELLOW}Waiting 8 seconds for connection...${NC}"
+    sleep 8
     
     TEST_RES=$(curl --socks5-hostname 127.0.0.1:$PORT -s --max-time 10 https://ipinfo.io)
     if [ -n "$TEST_RES" ]; then
         echo -e "${GREEN}Connection Successful!${NC}"
         echo "$TEST_RES" | grep -E '"ip"|"country"|"city"'
     else
-        echo -e "${YELLOW}Service updated. Check Option 2 for status.${NC}"
+        echo -e "${YELLOW}Service initialized. Use Option 2 to test SOCKS5 connectivity.${NC}"
     fi
 }
 
 list_and_test_services() {
     echo -e "\n${BLUE}=== Current Psiphon Status ===${NC}"
     
-    if [ ! -f "/etc/psiphon/psiphon.config" ] && [ ! -f "/usr/bin/psiphon" ]; then
+    if [ ! -f "/etc/systemd/system/psiphon-manager.service" ]; then
         echo -e "${YELLOW}No Psiphon service is currently installed.${NC}"
         return
     fi
 
-    STATUS=$(systemctl is-active psiphon 2>/dev/null || systemctl is-active psiphon.service 2>/dev/null)
+    STATUS=$(systemctl is-active psiphon-manager.service 2>/dev/null)
     
     if [ "$STATUS" == "active" ]; then
         PORT=$(grep -oP '"LocalSocksProxyPort":\s*\K\d+' /etc/psiphon/psiphon.config 2>/dev/null || echo "1080")
@@ -121,11 +142,12 @@ list_and_test_services() {
 
 uninstall_all() {
     echo -e "${RED}=== Clean Uninstall ===${NC}"
+    systemctl stop psiphon-manager.service 2>/dev/null
+    systemctl disable psiphon-manager.service 2>/dev/null
     systemctl stop psiphon 2>/dev/null
-    systemctl stop psiphon.service 2>/dev/null
     systemctl disable psiphon 2>/dev/null
-    systemctl disable psiphon.service 2>/dev/null
     
+    rm -f /etc/systemd/system/psiphon-manager.service
     rm -f /etc/systemd/system/psiphon.service
     systemctl daemon-reload
 
